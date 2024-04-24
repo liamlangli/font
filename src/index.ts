@@ -1,8 +1,9 @@
-import { true_type_font_load } from "./truetype";
+import { FontCollection } from "./OpenType";
+
 
 async function main() {
-
-    console.log(await true_type_font_load("font/Lato.ttf"));
+    const collection = new FontCollection();
+    console.log(await collection.add("font/Lato.ttf"));
 }
 
 main();

@@ -1,17 +1,16 @@
 {
-  "name": "@unionengine/font",
-  "version": "0.0.1",
-  "main": "index.js",
-  "author": "liamlangli",
-  "license": "MIT",
-  "type": "module",
-  "scripts": {
-    "dev": "node dev.js"
-  },
-  "devDependencies": {
-    "esbuild": "^0.20.2",
-    "typescript": "^5.4.5"
-  },
-  "dependencies": {
-  }
+    "name": "@unionengine/font",
+    "version": "0.0.1",
+    "main": "index.js",
+    "author": "liamlangli",
+    "license": "MIT",
+    "type": "module",
+    "scripts": {
+        "dev": "node dev.js"
+    },
+    "devDependencies": {
+        "esbuild": "^0.20.2",
+        "typescript": "^5.4.5"
+    },
+    "dependencies": {}
 }

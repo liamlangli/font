@@ -1,216 +1,298 @@
-// ref: https://tchayen.github.io/posts/ttf-file-parsing 
+// ref: http://stevehanov.ca/blog/?id=143 
 
 async function fetch_arraybuffer(uri: string): Promise<ArrayBuffer> {
     return await (await fetch(uri)).arrayBuffer();
 }
 
+type font_table = { [key: string]: { checksum: number, offset: number, length: number } };
+
+interface font_truetype {
+    version: number;
+    font_revision: number;
+    checksum_adjustment: number;
+    magic_number: number;
+
+    flags: number;
+    units_per_em: number;
+    created: Date;
+    modified: Date;
+    
+    x_min: number;
+    y_min: number;
+    x_max: number;
+    y_max: number;
+
+    mac_style: number;
+    lowest_rec_ppem: number;
+    font_direction_hint: number;
+    index_to_loc_format: number;
+    glyph_data_format: number;
+}
+
+interface glyph_point {
+    on_curve: boolean;
+    x: number;
+    y: number;
+}
+
+interface glyph {
+    contour_count: number;
+    x_min: number;
+    y_min: number;
+    x_max: number;
+    y_max: number;
+    
+    type: 'simple' | 'compound';
+    contour_ends: number[];
+    points: glyph_point[];
+}
+
 interface font_parser {
-    position: number;
+    pos: number;
     data: Uint8Array;
-    get_uint8(): number;
-    get_uint16(): number;
-    get_uint32(): number;
-    get_int16(): number;
-    get_int32(): number;
-    get_f_word(): number;
-    get_uf_word(): number;
-    get_offset16(): number;
-    get_offset32(): number;
-    get_f_to_dot14(): number;
-    get_fixed(): number;
-    get_string(length: number): string;
-    get_date(): Date;
-    get_position(): number;
-    set_position(target: number): void;
+
+    font: font_truetype;
+
+    // properties
+    scalar_type: number;
+    search_range: number;
+    entry_selector: number;
+    range_shift: number;
+
+    tables: font_table;
 }
 
-function font_parser_get_uint8(parser: font_parser): number {
-    return parser.data[parser.position++];
+function font_parser_seek(p: font_parser, pos: number): number {
+    console.assert(p.pos >= 0 && p.pos <= p.data.length);
+    let old = p.pos;
+    p.pos = pos;
+    return old;
 }
 
-function font_parser_get_uint16(parser: font_parser): number {
-    const value = (parser.data[parser.position] << 8) | parser.data[parser.position + 1];
-    parser.position += 2;
-    return value;
+function font_parser_tell(p: font_parser): number { return p.pos; }
+
+function font_parser_get_uint8(p: font_parser): number {
+    console.assert(p.pos < p.data.length);
+    return p.data[p.pos++];
 }
 
-function font_parser_get_uint32(parser: font_parser): number {
-    const value = (parser.data[parser.position] << 24) | (parser.data[parser.position + 1] << 16) | (parser.data[parser.position + 2] << 8) | parser.data[parser.position + 3];
-    parser.position += 4;
-    return value;
+function font_parser_get_uint16(p: font_parser): number {
+    return (font_parser_get_uint8(p) << 8 | font_parser_get_uint8(p)) >>> 0;
 }
 
-function font_parser_get_int16(parser: font_parser): number {
-    const value = (parser.data[parser.position] << 8) | parser.data[parser.position + 1];
-    parser.position += 2;
-    return value;
+function font_parser_get_uint32(p: font_parser): number {
+    return (font_parser_get_uint16(p) << 16 | font_parser_get_uint16(p)) >>> 0;
 }
 
-function font_parser_get_int32(parser: font_parser): number {
-    const value = (parser.data[parser.position] << 24) | (parser.data[parser.position + 1] << 16) | (parser.data[parser.position + 2] << 8) | parser.data[parser.position + 3];
-    parser.position += 4;
-    return value;
+function font_parser_get_int16(p: font_parser): number {
+    let r = font_parser_get_uint16(p);
+    return r & 0x8000 ? r - 0x10000 : r;
 }
 
-function font_parser_get_f_word(parser: font_parser): number {
-    return font_parser_get_int16(parser);
+function font_parser_get_int32(p: font_parser): number {
+    return font_parser_get_uint8(p) << 24 | font_parser_get_uint8(p) << 16 | font_parser_get_uint8(p) << 8 | font_parser_get_uint8(p);
 }
 
-function font_parser_get_uf_word(parser: font_parser): number {
-    return font_parser_get_uint16(parser);
+function font_parser_get_f_word(p: font_parser): number {
+    return font_parser_get_int16(p);
 }
 
-function font_parser_get_offset16(parser: font_parser): number {
-    return font_parser_get_uint16(parser);
+function font_parser_get_2_dot_14(p: font_parser): number {
+    return font_parser_get_int16(p) / 16384; // 1 << 14
 }
 
-function font_parser_get_offset32(parser: font_parser): number {
-    return font_parser_get_uint32(parser);
+function font_parser_get_fixed(p: font_parser): number {
+    return font_parser_get_int32(p) / 65536; // 1 << 16
 }
 
-function font_parser_get_f_to_dot14(parser: font_parser): number {
-    return font_parser_get_int16(parser);
+function font_parser_get_string(p: font_parser, length: number): string {
+    let r = "";
+    for (let i = 0; i < length; i++) {
+        r += String.fromCharCode(font_parser_get_uint8(p));
+    }
+    return r;
 }
 
-function font_parser_get_fixed(parser: font_parser): number {
-    return font_parser_get_int32(parser);
+function font_parser_get_date(p: font_parser): Date {
+    const mac_time = font_parser_get_uint32(p) * 0x100000000 + font_parser_get_uint32(p);
+    const utc_time = mac_time * 1000 + Date.UTC(1904, 0, 1);
+    return new Date(utc_time);
 }
 
-function font_parser_get_string(parser: font_parser, length: number): string {
-    const value = String.fromCharCode(...parser.data.slice(parser.position, parser.position + length));
-    parser.position += length;
-    return value;
+function font_parser_cal_table_checksum(p: font_parser, offset: number, length: number): number {
+    const old = font_parser_seek(p, offset);
+    let sum = 0;
+    let nlongs = ((length + 3) / 4) | 0;
+    while (nlongs-- > 0) {
+        sum = (sum + font_parser_get_uint32(p) & 0xffffffff) >>> 0;
+    }
+    font_parser_seek(p, old);
+    return sum;
 }
 
-function font_parser_set_position(parser: font_parser, target: number): void {
-    parser.position = target;
+function font_parser_read_offset_tables(p: font_parser): { [key: string]: { checksum: number, offset: number, length: number } } {
+    p.scalar_type = font_parser_get_uint32(p);
+    const num_tables = font_parser_get_uint16(p);
+    p.search_range = font_parser_get_uint16(p); // searchRange
+    p.entry_selector = font_parser_get_uint16(p); // entrySelector
+    p.range_shift = font_parser_get_uint16(p); // rangeShift
+
+    const tables = {};
+    for (let i = 0; i < num_tables; i++) {
+        const tag = font_parser_get_string(p, 4);
+        const checksum = font_parser_get_uint32(p);
+        const offset = font_parser_get_uint32(p);
+        const length = font_parser_get_uint32(p);
+        tables[tag] = { checksum, offset, length };
+        if (tag !== 'head') {
+            console.assert(checksum === font_parser_cal_table_checksum(p, offset, length));
+        }
+    }
+    p.tables = tables;
+    return tables;
 }
 
-function font_parser_get_date(parser: font_parser): Date {
-    const mac_time = font_parser_get_uint32(parser);
-    return new Date((mac_time * 0x100000000) / 1000);
+function font_parser_read_head_table(p: font_parser) {
+    console.assert(p.tables['head']);
+    font_parser_seek(p, p.tables['head'].offset);
+    const font = p.font;
+    font.version = font_parser_get_fixed(p);
+    font.font_revision = font_parser_get_fixed(p);
+    font.checksum_adjustment = font_parser_get_uint32(p);
+    font.magic_number = font_parser_get_uint32(p);
+    console.assert(font.magic_number === 0x5f0f3cf5);
+    font.flags = font_parser_get_uint16(p);
+    font.units_per_em = font_parser_get_uint16(p);
+    font.created = font_parser_get_date(p);
+    font.modified = font_parser_get_date(p);
+
+    font.x_min = font_parser_get_f_word(p);
+    font.y_min = font_parser_get_f_word(p);
+    font.x_max = font_parser_get_f_word(p);
+    font.y_max = font_parser_get_f_word(p);
+
+    font.mac_style = font_parser_get_uint16(p);
+    font.lowest_rec_ppem = font_parser_get_uint16(p);
+    font.font_direction_hint = font_parser_get_int16(p);
+    font.index_to_loc_format = font_parser_get_int16(p);
+    font.glyph_data_format = font_parser_get_int16(p);
 }
 
-function font_parser_get_position(parser: font_parser): number {
-    return parser.position;
+function font_parser_get_glyph_offset(p: font_parser, index: number): number {
+    const table = p.tables['loca'];
+    console.assert(table);
+    let old: number, offset: number;
+    if (p.font.index_to_loc_format === 1) {
+        old = font_parser_seek(p, table.offset + index * 4);
+        offset = font_parser_get_uint32(p);
+    } else {
+        old = font_parser_seek(p, table.offset + index * 2);
+        offset = font_parser_get_uint16(p) * 2;
+    }
+    font_parser_seek(p, old);
+    return offset + p.tables["glyf"].offset;
+}
+
+function font_parser_read_simple_glyph(p: font_parser, g: glyph): void {
+    let ON_CURVE = 0x01;
+    let X_IS_BYTE = 0x02;
+    let Y_IS_BYTE = 0x04;
+    let REPEAT = 0x08;
+    let X_DELTA = 0x10;
+    let Y_DELTA = 0x20;
+
+    g.type = 'simple';
+    g.contour_ends = [];
+    g.points = [];
+    let points = g.points;
+    for (let i = 0; i < g.contour_count; i++) {
+        g.contour_ends.push(font_parser_get_uint16(p));
+    }
+
+    font_parser_seek(p, font_parser_get_uint16(p) + font_parser_tell(p));
+    if (g.contour_count === 0) { return; }
+
+    const point_count = Math.max.apply(null, g.contour_ends) + 1;
+    const flags: number[] = [];
+
+    for (let i = 0; i < point_count; ++i) {
+        let flag = font_parser_get_uint8(p);
+        points.push({
+            on_curve: (flag & ON_CURVE) > 0,
+        } as glyph_point);
+
+        if (flag & REPEAT) {
+            let repeat_count = font_parser_get_uint8(p);
+            console.assert(repeat_count > 0);
+            while (repeat_count--) {
+                flags.push(flag);
+                points.push({
+                    on_curve: (flag & ON_CURVE) > 0,
+                } as glyph_point);
+            }
+        }
+    }
+
+    function read_coords(name: string, byte_flag: number, delta_flag: number, min: number, max: number) {
+        let value = 0;
+        for (let i = 0; i < point_count; ++i) {
+            let flag = flags[i];
+            if (flag & byte_flag) {
+                if (flag & delta_flag) {
+                    value += font_parser_get_uint8(p);
+                } else {
+                    value -= font_parser_get_uint8(p);
+                }
+            } else if (~flag & delta_flag) {
+                value += font_parser_get_int16(p);
+            }
+            console.assert(value >= min && value <= max);
+            points[i][name] = value;
+        }
+    }
+
+    read_coords('x', X_IS_BYTE, X_DELTA, g.x_min, g.x_max);
+    read_coords('y', Y_IS_BYTE, Y_DELTA, g.y_min, g.y_max);
+}
+
+function font_parser_read_compound_glyph(p: font_parser, g: glyph): void {
+
+}
+
+function font_parser_read_glyph(p: font_parser, index: number): glyph | null {
+    const offset = font_parser_get_glyph_offset(p, index);
+
+    const table = p.tables['glyf'];
+    if (offset > table.offset + table.length) { return null; }
+    console.assert(offset >= table.offset);
+    console.assert(offset < table.offset + table.length);
+
+    const old = font_parser_seek(p, offset);
+    const g = {} as glyph;
+    g.contour_count = font_parser_get_int16(p);
+    console.assert(g.contour_count >= -1);
+
+    g.x_min = font_parser_get_f_word(p);
+    g.y_min = font_parser_get_f_word(p);
+    g.x_max = font_parser_get_f_word(p);
+    g.y_max = font_parser_get_f_word(p);
+
+    if (g.contour_count === -1) {
+        font_parser_read_simple_glyph(p, g);
+    } else {
+        font_parser_read_compound_glyph(p, g);
+    }
+    font_parser_seek(p, old);
+    return g;
 }
 
 export async function true_type_font_load(uri: string) {
     const buffer = await fetch_arraybuffer(uri);
     const data = new Uint8Array(buffer);
-    const parser = { position: 0, data } as font_parser;
+    const parser = { pos: 0, data, font: {} } as font_parser;
 
-    const scalar_type = font_parser_get_uint32(parser);
-    const num_tables = font_parser_get_uint16(parser);
-    const search_range = font_parser_get_uint16(parser); // searchRange
-    const entry_selector = font_parser_get_uint16(parser); // entrySelector
-    const range_shift = font_parser_get_uint16(parser); // rangeShift
+    font_parser_read_offset_tables(parser);
+    font_parser_read_head_table(parser);
 
-    console.log({ scalar_type, num_tables, search_range, entry_selector, range_shift });
-
-    const tables = {};
-    const tags: string[] = [];
-    for (let i = 0; i < num_tables; i++) {
-        const tag = font_parser_get_string(parser, 4);
-        const checksum = font_parser_get_uint32(parser);
-        const offset = font_parser_get_uint32(parser);
-        const length = font_parser_get_uint32(parser);
-        tables[tag] = { checksum, offset, length };
-        tags.push(tag);
-    }
-    console.log(tags.join(", "));
-    console.log(tables);
-
-    const head = {};
-    head['major'] = font_parser_get_uint16(parser);
-    head['minor'] = font_parser_get_uint16(parser);
-    head['font_revision'] = font_parser_get_fixed(parser);
-    head['checksum_adjustment'] = font_parser_get_uint32(parser);
-    head['magic_number'] = font_parser_get_uint32(parser);
-    head['flags'] = font_parser_get_uint16(parser);
-    head['units_per_em'] = font_parser_get_uint16(parser);
-    head['created'] = font_parser_get_date(parser);
-    head['modified'] = font_parser_get_date(parser);
-    head['x_min'] = font_parser_get_f_word(parser);
-    head['y_min'] = font_parser_get_f_word(parser);
-    head['x_max'] = font_parser_get_f_word(parser);
-    head['y_max'] = font_parser_get_f_word(parser);
-    head['mac_style'] = font_parser_get_uint16(parser);
-    head['lowest_rec_ppem'] = font_parser_get_uint16(parser);
-    head['font_direction_hint'] = font_parser_get_int16(parser);
-    head['index_to_loc_format'] = font_parser_get_int16(parser);
-    head['glyph_data_format'] = font_parser_get_int16(parser);
-    console.log(head);
-
-    const maxp = {};
-    maxp['version'] = font_parser_get_fixed(parser);
-    maxp['num_glyphs'] = font_parser_get_uint16(parser);
-    maxp['max_points'] = font_parser_get_uint16(parser);
-    maxp['max_contours'] = font_parser_get_uint16(parser);
-    maxp['max_composite_points'] = font_parser_get_uint16(parser);
-    maxp['max_composite_contours'] = font_parser_get_uint16(parser);
-    maxp['max_zones'] = font_parser_get_uint16(parser);
-    maxp['max_twilight_points'] = font_parser_get_uint16(parser);
-    maxp['max_storage'] = font_parser_get_uint16(parser);
-    maxp['max_function_defs'] = font_parser_get_uint16(parser);
-    maxp['max_instruction_defs'] = font_parser_get_uint16(parser);
-    maxp['max_stack_elements'] = font_parser_get_uint16(parser);
-    maxp['max_size_of_instructions'] = font_parser_get_uint16(parser);
-    maxp['max_component_elements'] = font_parser_get_uint16(parser);
-    maxp['max_component_depth'] = font_parser_get_uint16(parser);
-    console.log(maxp);
-
-    const hhea = {};
-    hhea['version'] = font_parser_get_fixed(parser);
-    hhea['ascender'] = font_parser_get_f_word(parser);
-    hhea['descender'] = font_parser_get_f_word(parser);
-    hhea['line_gap'] = font_parser_get_f_word(parser);
-    hhea['advance_width_max'] = font_parser_get_uf_word(parser);
-    hhea['min_left_side_bearing'] = font_parser_get_f_word(parser);
-    hhea['min_right_side_bearing'] = font_parser_get_f_word(parser);
-    hhea['x_max_extent'] = font_parser_get_f_word(parser);
-    hhea['caret_slope_rise'] = font_parser_get_int16(parser);
-    hhea['caret_slope_run'] = font_parser_get_int16(parser);
-    hhea['caret_offset'] = font_parser_get_f_word(parser);
-
-    // reserved
-    font_parser_get_int16(parser);
-    font_parser_get_int16(parser);
-    font_parser_get_int16(parser);
-    font_parser_get_int16(parser);
-
-    hhea['metric_data_format'] = font_parser_get_int16(parser);
-    hhea['number_of_hmetrics'] = font_parser_get_uint16(parser);
-
-    // hmtx
-    const hmtx = {};
-    for (let i = 0, l = hhea['number_of_hmetrics']; i < l; i++) {
-        hmtx[i] = {
-            advance_width: font_parser_get_uint16(parser),
-            left_side_bearing: font_parser_get_int16(parser),
-        };
-    }
-
-    const left_side_bearings: number[] = [];
-    for (let i = hhea['number_of_hmetrics'], l = maxp['num_glyphs']; i < l; i++) {
-        left_side_bearings.push(font_parser_get_f_word(parser));
-    }
-
-    const getter = head['index_to_loc_format'] === 0 ? font_parser_get_offset16 : font_parser_get_offset32;
-    const loca = {};
-    for (let i = 0, l = maxp['num_glyphs']; i < l; i++) {
-        loca[i] = getter(parser);
-    }
-
-    const glfy: any[] = [];
-    const multiplier = head['index_to_loc_format'] === 0 ? 2 : 1
-    for (let i = 0, l = maxp['num_glyphs']; i < l; i++) {
-        const offset = loca[i] * multiplier;
-        if (offset === loca[i + 1]) {
-            continue;
-        }
-        font_parser_set_position(parser, offset);
-        const number_of_contours = font_parser_get_int16(parser);
-        glfy.push({ number_of_contours });
-    }
+    return parser;
 }
