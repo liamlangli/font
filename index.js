@@ -379,7 +379,6 @@ function generateImage(opt, callback) {
                 imageData,
                 fontData: [
                     char.charCodeAt(0), // id
-                    glyph.index,        // index
                     width,
                     height,
                     Math.round(bBox.x1) - pad, // xoffset
