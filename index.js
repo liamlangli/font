@@ -261,8 +261,8 @@ function generateBMFont(fontPath, opt, callback) {
             // spacing: fontSpacing,
             // outline: 0
             // },
-            // scaleW: packer.bins[0].width,
-            // scaleH: packer.bins[0].height,
+            width: packer.bins[0].width,
+            height: packer.bins[0].height,
             line_height: (os2.sTypoAscender - os2.sTypoDescender + os2.sTypoLineGap) * (fontSize / font.unitsPerEm),
             // base: baseline,
             // common: {
