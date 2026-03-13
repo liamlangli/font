@@ -1,0 +1,127 @@
+# @unionengine/font
+
+`@unionengine/font` provides the `ufont` CLI for generating BMFont-compatible bitmap font atlases from `ttf`, `otf`, or `woff` files using signed distance fields.
+
+## Install
+
+Install dependencies first:
+
+```bash
+yarn install
+```
+
+Run the CLI locally with Node:
+
+```bash
+node cli.js ./path/to/font.ttf
+```
+
+Or install/link the package so the `ufont` command is available on your machine:
+
+```bash
+yarn global add file:.
+```
+
+Then run:
+
+```bash
+ufont ./path/to/font.ttf
+```
+
+## Basic Usage
+
+```bash
+ufont [options] <font-file>
+```
+
+Example:
+
+```bash
+ufont ./public/font/Lato.ttf
+```
+
+This generates:
+
+- A bitmap atlas PNG, such as `Lato.png`
+- A font metadata file, such as `Lato.json` or `Lato.fnt`
+- An optional config file when `--reuse` is enabled
+- Optional SVG debug output when `--vector` is enabled
+
+## Common Examples
+
+Generate JSON output:
+
+```bash
+ufont -f json ./public/font/Lato.ttf
+```
+
+Write output under a custom base filename:
+
+```bash
+ufont -o ./dist/LatoAtlas ./public/font/Lato.ttf
+```
+
+Use a custom charset file:
+
+```bash
+ufont -i ./charset.txt ./public/font/Lato.ttf
+```
+
+Generate a smaller atlas with custom glyph size and padding:
+
+```bash
+ufont -s 64 -m 1024,1024 -p 2 -b 4 ./public/font/Lato.ttf
+```
+
+Save reusable settings to a config file:
+
+```bash
+ufont -u ./lato.cfg ./public/font/Lato.ttf
+```
+
+## CLI Options
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `-f, --output-type <format>` | Output metadata format: `xml`, `json`, or `txt` | `json` in CLI parsing, internal fallback is `xml` |
+| `-o, --filename <atlas_path>` | Output base filename for atlas images; font filename is derived from the font face name | font file directory + font face |
+| `-s, --font-size <fontSize>` | Glyph render size | `42` |
+| `-i, --charset-file <charset>` | Text file containing characters to include | ASCII fallback |
+| `-m, --texture-size <w,h>` | Atlas size as `width,height` | `2048,2048` from CLI |
+| `-p, --texture-padding <n>` | Padding between glyphs | `1` |
+| `-b, --border <n>` | Space between atlas edge and packed glyphs | `0` |
+| `-r, --distance-range <n>` | SDF pixel range | `4` |
+| `-t, --field-type <type>` | Distance field type: `msdf`, `sdf`, or `psdf` | `msdf` |
+| `-d, --round-decimal <digit>` | Round numeric values in output metadata | `0` |
+| `-v, --vector` | Write SVG debug files for atlas pages | `false` |
+| `-u, --reuse [file.cfg]` | Save or reuse generation settings from a config file | `false` |
+| `--smart-size` | Shrink atlas to the smallest possible square | `false` in runtime defaults |
+| `--pot` | Force atlas dimensions to powers of two | `false` |
+| `--square` | Force atlas dimensions to be square | `false` |
+| `--rot` | Allow 90-degree glyph rotation while packing | `false` |
+| `--rtl` | Enable RTL character fixes | `false` |
+
+## Output Behavior
+
+- The output metadata file is written as `<font-face>.json` when `-f json` is used.
+- Non-JSON formats are written as `<font-face>.fnt`.
+- Texture pages are written beside the source font by default unless `-o` points elsewhere.
+- If the atlas needs multiple pages, the CLI writes numbered textures such as `MyFont.0.png`, `MyFont.1.png`, and so on.
+
+## Charset Files
+
+When `-i/--charset-file` is provided, the file contents are used as the glyph set. If no charset file is supplied, the CLI falls back to printable ASCII characters.
+
+Example `charset.txt`:
+
+```text
+ABCDEFGHIJKLMNOPQRSTUVWXYZ
+abcdefghijklmnopqrstuvwxyz
+0123456789
+!?.,:;+-=*/()[]{}<>
+```
+
+## Notes
+
+- The CLI shells out to the bundled `msdfgen` binary under `bin/`, so generation is platform-dependent.
+- This workspace currently does not have installed Node dependencies, so `node cli.js -h` will fail until `yarn install` is run.
