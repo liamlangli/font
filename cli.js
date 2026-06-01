@@ -9,6 +9,12 @@ const { Command } = require('commander');
 const utils = require('./lib/utils');
 
 const program = new Command();
+const charsetPresets = {
+    zh_cn: [
+        path.join(__dirname, 'charset', 'en_common.txt'),
+        path.join(__dirname, 'charset', 'zh_cn_3500.txt')
+    ]
+};
 let fontFile;
 program
     .version('ufont v' + pkg.version)
@@ -18,6 +24,7 @@ program
     .option('-f, --output-type <format>', 'font file format: xml(default) | json | txt', 'json')
     .option('-o, --filename <atlas_path>', 'filename of font textures (defaut: font-face) font filename always set to font-face name')
     .option('-s, --font-size <fontSize>', 'font size for generated textures', 42)
+    .option('-c, --charset <preset>', 'built-in charset preset: zh_cn')
     .option('-i, --charset-file <charset>', 'user-specified charactors from text-file', fileExistValidate)
     .option('-m, --texture-size <w,h>', 'ouput texture atlas size', (v) => { return v.split(',') }, [2048, 2048])
     .option('-p, --texture-padding <n>', 'padding between glyphs', 1)
@@ -78,7 +85,7 @@ console.log("========================================");
 keys.forEach(key => {
     if (typeof opt.reuse === 'string' && typeof opt[key] === 'undefined') {
         console.log(pad(key, padding) + ": Defined in [" + opt.reuse + "]");
-    } else if (key === 'charsetFile' && typeof opt[key] === 'undefined') {
+    } else if (key === 'charsetFile' && typeof opt[key] === 'undefined' && typeof opt.charset === 'undefined') {
         console.log(pad(key, padding) + ": Unspecified, fallback to ASC-II");
     } else console.log(pad(key, padding) + ": " + opt[key]);
 });
@@ -93,9 +100,10 @@ if (typeof opt.fontFile === 'undefined') {
 }
 if (typeof opt.reuse !== 'boolean') opt.reuse = fileValidate(opt.reuse);
 
-fs.readFile(opt.charsetFile || '', 'utf8', (error, data) => {
+loadCharset(opt, (error, data) => {
     if (error) {
-        console.warn('No valid charset file loaded, fallback to ASC-II');
+        console.warn(error.message);
+        delete opt.charset;
     }
     if (data) opt.charset = data;
 
@@ -177,6 +185,38 @@ function fileExistValidate(filePath) {
         console.error('File: ', filePath, ' not valid! Aborting...');
         process.exit(1);
     }
+}
+
+function loadCharset(opt, callback) {
+    if (opt.charsetFile) {
+        return fs.readFile(opt.charsetFile, 'utf8', (error, data) => {
+            if (error) return callback(new Error('No valid charset file loaded, fallback to ASC-II'));
+            callback(null, normalizeCharsetContent(data));
+        });
+    }
+
+    if (!opt.charset) {
+        return callback(null);
+    }
+
+    const presetFiles = charsetPresets[opt.charset];
+    if (!presetFiles) {
+        const available = Object.keys(charsetPresets).join(', ');
+        console.error(`Unknown charset preset: ${opt.charset}. Available presets: ${available}`);
+        process.exit(1);
+    }
+
+    fs.readFile(presetFiles[0], 'utf8', (firstError, firstData) => {
+        if (firstError) return callback(new Error(`No valid charset preset loaded: ${opt.charset}, fallback to ASC-II`));
+        fs.readFile(presetFiles[1], 'utf8', (secondError, secondData) => {
+            if (secondError) return callback(new Error(`No valid charset preset loaded: ${opt.charset}, fallback to ASC-II`));
+            callback(null, normalizeCharsetContent(firstData) + normalizeCharsetContent(secondData));
+        });
+    });
+}
+
+function normalizeCharsetContent(data) {
+    return data.replace(/^\uFEFF/, '');
 }
 
 function fileValidate(filePath) {

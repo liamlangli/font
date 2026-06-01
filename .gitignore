@@ -13,7 +13,6 @@ npm
 .DS_Store
 
 # extra
-.yarnclean
 .history
 .resolve
 .cache-loader

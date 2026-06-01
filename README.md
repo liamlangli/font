@@ -1,13 +1,13 @@
-# @unionengine/font
+# @liamlangli/font
 
-`@unionengine/font` provides the `ufont` CLI for generating BMFont-compatible bitmap font atlases from `ttf`, `otf`, or `woff` files using signed distance fields.
+`@liamlangli/font` provides the `ufont` CLI for generating BMFont-compatible bitmap font atlases from `ttf`, `otf`, or `woff` files using signed distance fields.
 
 ## Install
 
 Install dependencies first:
 
 ```bash
-yarn install
+npm install
 ```
 
 Run the CLI locally with Node:
@@ -19,7 +19,7 @@ node cli.js ./path/to/font.ttf
 Or install/link the package so the `ufont` command is available on your machine:
 
 ```bash
-yarn global add file:.
+npm install --global .
 ```
 
 Then run:
@@ -67,6 +67,12 @@ Use a custom charset file:
 ufont -i ./charset.txt ./public/font/Lato.ttf
 ```
 
+Use the built-in Simplified Chinese charset:
+
+```bash
+ufont --charset zh_cn ./public/font/Lato.ttf
+```
+
 Generate a smaller atlas with custom glyph size and padding:
 
 ```bash
@@ -86,6 +92,7 @@ ufont -u ./lato.cfg ./public/font/Lato.ttf
 | `-f, --output-type <format>` | Output metadata format: `xml`, `json`, or `txt` | `json` in CLI parsing, internal fallback is `xml` |
 | `-o, --filename <atlas_path>` | Output base filename for atlas images; font filename is derived from the font face name | font file directory + font face |
 | `-s, --font-size <fontSize>` | Glyph render size | `42` |
+| `-c, --charset <preset>` | Built-in charset preset. Currently supports `zh_cn` (`en_common` + `zh_cn_3500`) | ASCII fallback |
 | `-i, --charset-file <charset>` | Text file containing characters to include | ASCII fallback |
 | `-m, --texture-size <w,h>` | Atlas size as `width,height` | `2048,2048` from CLI |
 | `-p, --texture-padding <n>` | Padding between glyphs | `1` |
@@ -110,7 +117,7 @@ ufont -u ./lato.cfg ./public/font/Lato.ttf
 
 ## Charset Files
 
-When `-i/--charset-file` is provided, the file contents are used as the glyph set. If no charset file is supplied, the CLI falls back to printable ASCII characters.
+When `-c/--charset zh_cn` is provided, the CLI uses `charset/en_common.txt` plus `charset/zh_cn_3500.txt` as the glyph set. When `-i/--charset-file` is provided, the file contents are used as the glyph set. If no charset option is supplied, the CLI falls back to printable ASCII characters.
 
 Example `charset.txt`:
 
@@ -124,4 +131,4 @@ abcdefghijklmnopqrstuvwxyz
 ## Notes
 
 - The CLI shells out to the bundled `msdfgen` binary under `bin/`, so generation is platform-dependent.
-- This workspace currently does not have installed Node dependencies, so `node cli.js -h` will fail until `yarn install` is run.
+- This workspace currently does not have installed Node dependencies, so `node cli.js -h` will fail until `npm install` is run.
