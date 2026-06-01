@@ -4,62 +4,41 @@ const pkg = require('./package.json');
 const generateBMFont = require('./index');
 const fs = require('fs');
 const path = require('path');
-const handlebars = require('handlebars');
-const { Command } = require('commander');
 const utils = require('./lib/utils');
 
-const program = new Command();
 const charsetPresets = {
     zh_cn: [
         path.join(__dirname, 'charset', 'en_common.txt'),
         path.join(__dirname, 'charset', 'zh_cn_3500.txt')
     ]
 };
-let fontFile;
-program
-    .version('ufont v' + pkg.version)
-    .usage('[options] <font-file>')
-    .arguments('<font_file>')
-    .description('Creates a BMFont compatible bitmap font of signed distance fields from a font file')
-    .option('-f, --output-type <format>', 'font file format: xml(default) | json | txt', 'json')
-    .option('-o, --filename <atlas_path>', 'filename of font textures (defaut: font-face) font filename always set to font-face name')
-    .option('-s, --font-size <fontSize>', 'font size for generated textures', 42)
-    .option('-c, --charset <preset>', 'built-in charset preset: zh_cn')
-    .option('-i, --charset-file <charset>', 'user-specified charactors from text-file', fileExistValidate)
-    .option('-m, --texture-size <w,h>', 'ouput texture atlas size', (v) => { return v.split(',') }, [2048, 2048])
-    .option('-p, --texture-padding <n>', 'padding between glyphs', 1)
-    .option('-b, --border <n>', 'space between glyphs textures & edge', 0)
-    .option('-r, --distance-range <n>', 'distance range for SDF', 4)
-    .option('-t, --field-type <type>', 'msdf(default) | sdf | psdf', 'msdf')
-    .option('-d, --round-decimal <digit>', 'rounded digits of the output font file.', 0)
-    .option('-v, --vector', 'generate svg vector file for debuging', false)
-    .option('-u, --reuse [file.cfg]', 'save/create config file for reusing settings', false)
-    .option('    --smart-size', 'shrink atlas to the smallest possible square', true)
-    .option('    --pot', 'atlas size shall be power of 2', false)
-    .option('    --square', 'atlas size shall be square', false)
-    .option('    --rot', 'allow 90-degree rotation while packing', false)
-    .option('    --rtl', 'use RTL(Arabic/Persian) charactors fix', false)
-    .action(function (file) {
-        fontFile = fileExistValidate(file);
-    }).parse(process.argv);
+
+const parsed = parseArgs(process.argv.slice(2));
+if (parsed.help) {
+    printHelp();
+    process.exit(0);
+}
+if (parsed.version) {
+    console.log('ufont v' + pkg.version);
+    process.exit(0);
+}
 
 //
 // Initialize options 
 //
-let opt = program.opts();
+let opt = parsed.options;
 utils.roundAllValue(opt); // Parse all number from string
+let fontFile = parsed.fontFile;
 if (!fontFile) {
-    console.error('Must specify font-file, use: \'msdf-bmfont -h\' for more infomation');
+    console.error('Must specify font-file, use: \'ufont -h\' for more infomation');
     process.exit(1);
 }
+fontFile = fileExistValidate(fontFile);
 const fontface = path.basename(fontFile, path.extname(fontFile));
 const fontDir = path.dirname(fontFile);
 
 //
 // Set default value
-//
-// Note: somehow commander.js didn't parse boolean default value
-// need to feed manually
 //
 opt.fontFile = fontFile;
 if (typeof opt.reuse === 'boolean') {
@@ -111,18 +90,11 @@ loadCharset(opt, (error, data) => {
         if (error) throw error;
         textures.forEach((texture, index) => {
             if (opt.vector) {
-                const svgTemplate =
-                    `<?xml version="1.0"?>
+                const content = `<?xml version="1.0"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
-<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="{{width}}" height="{{height}}">
-{{{svgPath}}}
+<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="${opt.textureWidth}" height="${opt.textureHeight}">
+${texture.svg}
 </svg>`;
-                const template = handlebars.compile(svgTemplate);
-                const content = template({
-                    width: opt.textureWidth,
-                    height: opt.textureHeight,
-                    svgPath: texture.svg
-                });
                 fs.writeFile(`${texture.filename}.svg`, content, (err) => {
                     if (err) throw err;
                     console.log('wrote svg[', index, ']         : ', `${texture.filename}.svg`);
@@ -174,6 +146,154 @@ function longestLength(arr) {
     }, 0);
 };
 
+function parseArgs(args) {
+    const options = {
+        outputType: 'json',
+        fontSize: 42,
+        textureSize: [2048, 2048],
+        texturePadding: 1,
+        border: 0,
+        distanceRange: 4,
+        fieldType: 'msdf',
+        roundDecimal: 0,
+        vector: false,
+        reuse: false,
+        smartSize: false,
+        pot: false,
+        square: false,
+        rot: false,
+        rtl: false
+    };
+    let fontFile;
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        switch (arg) {
+            case '-h':
+            case '--help':
+                return { help: true, options };
+            case '-V':
+            case '--version':
+                return { version: true, options };
+            case '-f':
+            case '--output-type':
+                options.outputType = readOptionValue(args, ++i, arg);
+                break;
+            case '-o':
+            case '--filename':
+                options.filename = readOptionValue(args, ++i, arg);
+                break;
+            case '-s':
+            case '--font-size':
+                options.fontSize = readOptionValue(args, ++i, arg);
+                break;
+            case '-c':
+            case '--charset':
+                options.charset = readOptionValue(args, ++i, arg);
+                break;
+            case '-i':
+            case '--charset-file':
+                options.charsetFile = fileExistValidate(readOptionValue(args, ++i, arg));
+                break;
+            case '-m':
+            case '--texture-size':
+                options.textureSize = readOptionValue(args, ++i, arg).split(',');
+                break;
+            case '-p':
+            case '--texture-padding':
+                options.texturePadding = readOptionValue(args, ++i, arg);
+                break;
+            case '-b':
+            case '--border':
+                options.border = readOptionValue(args, ++i, arg);
+                break;
+            case '-r':
+            case '--distance-range':
+                options.distanceRange = readOptionValue(args, ++i, arg);
+                break;
+            case '-t':
+            case '--field-type':
+                options.fieldType = readOptionValue(args, ++i, arg);
+                break;
+            case '-d':
+            case '--round-decimal':
+                options.roundDecimal = readOptionValue(args, ++i, arg);
+                break;
+            case '-v':
+            case '--vector':
+                options.vector = true;
+                break;
+            case '-u':
+            case '--reuse':
+                if (args[i + 1] && !args[i + 1].startsWith('-')) options.reuse = args[++i];
+                else options.reuse = true;
+                break;
+            case '--smart-size':
+                options.smartSize = true;
+                break;
+            case '--pot':
+                options.pot = true;
+                break;
+            case '--square':
+                options.square = true;
+                break;
+            case '--rot':
+                options.rot = true;
+                break;
+            case '--rtl':
+                options.rtl = true;
+                break;
+            default:
+                if (arg.startsWith('-')) {
+                    console.error(`Unknown option: ${arg}`);
+                    process.exit(1);
+                }
+                fontFile = arg;
+        }
+    }
+
+    return { options, fontFile };
+}
+
+function readOptionValue(args, index, optionName) {
+    const value = args[index];
+    if (!value || value.startsWith('-')) {
+        console.error(`Missing value for ${optionName}`);
+        process.exit(1);
+    }
+    return value;
+}
+
+function printHelp() {
+    console.log(`ufont v${pkg.version}
+
+Usage: ufont [options] <font-file>
+
+Creates a BMFont compatible bitmap font of signed distance fields from a font file
+
+Options:
+  -f, --output-type <format>       font file format: xml(default) | json | txt
+  -o, --filename <atlas_path>      filename of font textures
+  -s, --font-size <fontSize>       font size for generated textures
+  -c, --charset <preset>           built-in charset preset: zh_cn
+  -i, --charset-file <charset>     user-specified charactors from text-file
+  -m, --texture-size <w,h>         output texture atlas size
+  -p, --texture-padding <n>        padding between glyphs
+  -b, --border <n>                 space between glyphs textures & edge
+  -r, --distance-range <n>         distance range for SDF
+  -t, --field-type <type>          msdf(default) | sdf | psdf
+  -d, --round-decimal <digit>      rounded digits of the output font file
+  -v, --vector                     generate svg vector file for debuging
+  -u, --reuse [file.cfg]           save/create config file for reusing settings
+      --smart-size                 shrink atlas to the smallest possible square
+      --pot                        atlas size shall be power of 2
+      --square                     atlas size shall be square
+      --rot                        allow 90-degree rotation while packing
+      --rtl                        use RTL(Arabic/Persian) charactors fix
+  -h, --help                       display help
+  -V, --version                    display version`);
+}
+
 function fileExistValidate(filePath) {
     try {
         if (fs.statSync(filePath).isFile()) return path.normalize(filePath);
@@ -220,7 +340,7 @@ function normalizeCharsetContent(data) {
 }
 
 function fileValidate(filePath) {
-    if (require('is-invalid-path')(filePath)) {
+    if (typeof filePath !== 'string' || filePath.includes('\0')) {
         console.error('File: ', filePath, ' not valid! Aborting...');
         process.exit(1);
     } else return path.normalize(filePath);

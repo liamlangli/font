@@ -1,15 +1,11 @@
 const utils = require('./lib/utils');
 const opentype = require('opentype.js');
 const exec = require('child_process').exec;
-const mapLimit = require('map-limit');
-const MaxRectsPacker = require('maxrects-packer').MaxRectsPacker;
 const path = require('path');
-const ProgressBar = require('cli-progress');
 const fs = require('fs');
-const buffer = require('buffer').Buffer;
-const Jimp = require('jimp');
 const readline = require('readline');
 const assert = require('assert');
+const zlib = require('zlib');
 
 const defaultCharset = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~".split('');
 const controlChars = ['\n', '\r', '\t'];
@@ -66,7 +62,7 @@ function generateBMFont(fontPath, opt, callback) {
 
     // Set fallback output path to font path
     let fontDir = typeof fontPath === 'string' ? path.dirname(fontPath) : '';
-    const binaryPath = path.join(__dirname, 'bin', process.platform, binName);
+    const binaryPath = path.join(__dirname, 'bin', lookupKey, binName);
 
     // const reuse = (typeof opt.reuse === 'boolean' || typeof opt.reuse === 'undefined') ? {} : opt.reuse.opt;
     let reuse, cfg = {};
@@ -107,19 +103,18 @@ function generateBMFont(fontPath, opt, callback) {
     }
 
     const font = typeof fontPath === 'string'
-        ? opentype.loadSync(fontPath)
+        ? opentype.parse(utils.bufferToArrayBuffer(fs.readFileSync(fontPath)))
         : opentype.parse(utils.bufferToArrayBuffer(fontPath));
 
     if (font.outlinesFormat !== 'truetype' && font.outlinesFormat !== 'cff') {
         throw new TypeError('must specify a truetype font (ttf, otf, woff)');
     }
-    const packer = new MaxRectsPacker(textureWidth, textureHeight, texturePadding, {
+    const packer = new ShelfPacker(textureWidth, textureHeight, texturePadding, {
         smart: smartSize,
-        pot: pot,
-        square: square,
-        allowRotation: allowRotation,
-        tag: false,
-        border: border
+        pot,
+        square,
+        allowRotation,
+        border
     });
     const chars = [];
 
@@ -145,17 +140,9 @@ function generateBMFont(fontPath, opt, callback) {
     settings.opt = JSON.parse(JSON.stringify(opt));
     delete settings.opt['reuse']; // prune previous settings
     let pages = [];
-    if (cfg.packer !== undefined) {
-        pages = cfg.pages;
-        packer.load(cfg.packer.bins);
-    }
 
-    let bar;
-    bar = new ProgressBar.Bar({
-        format: "Generating {percentage}%|{bar}| ({value}/{total}) {duration}s",
-        clearOnComplete: true
-    }, ProgressBar.Presets.shades_classic);
-    bar.start(charset.length, 0);
+    const progress = createProgress(charset.length);
+    progress.start();
 
     mapLimit(charset, 15, (char, cb) => {
         generateImage({
@@ -170,41 +157,36 @@ function generateBMFont(fontPath, opt, callback) {
             tolerance
         }, (err, res) => {
             if (err) return cb(err);
-            bar.increment();
+            progress.increment();
             cb(null, res);
         });
     }, async (err, results) => {
-        if (err) callback(err);
-        bar.stop();
+        if (err) return callback(err);
+        progress.stop();
 
-        packer.addArray(results);
+        try {
+            packer.addArray(results);
+        } catch (error) {
+            return callback(error);
+        }
         const textures = packer.bins.map(async (bin, index) => {
             let svg = "";
             let texname = "";
             let fillColor = fieldType === "mtsdf" ? 0x000000ff : 0x00000000;
-            let img = new Jimp(bin.width, bin.height, fillColor);
+            let img = createImage(bin.width, bin.height, fillColor);
             if (index > pages.length - 1) {
                 if (packer.bins.length > 1) texname = `${filename}.${index}`;
                 else texname = filename;
                 pages.push(`${texname}.png`);
             } else {
                 texname = path.basename(pages[index], path.extname(pages[index]));
-                let imgPath = path.join(fontDir, `${texname}.png`);
-                // let imgPath = `${texname}.png`;
-                console.log('Loading previous image : ', imgPath);
-                const loader = Jimp.read(imgPath);
-                loader.catch(err => {
-                    console.warn("File read error: ", err);
-                });
-                const prevImg = await loader;
-                img.composite(prevImg, 0, 0);
             }
             bin.rects.forEach(rect => {
                 if (rect.data.imageData) {
                     if (rect.rot) {
-                        rect.data.imageData.rotate(90);
+                        rect.data.imageData = rotateImage90(rect.data.imageData);
                     }
-                    img.composite(rect.data.imageData, rect.x, rect.y);
+                    compositeImage(img, rect.data.imageData, rect.x, rect.y);
                     if (debug) {
                         const x_woffset = rect.x - rect.data.fontData.xoffset + (distanceRange >> 1);
                         const y_woffset = rect.y - rect.data.fontData.yoffset + baseline + (distanceRange >> 1);
@@ -217,7 +199,7 @@ function generateBMFont(fontPath, opt, callback) {
                 // charData.page = index;
                 chars.push(rect.data.fontData);
             });
-            const buffer = await img.getBufferAsync(Jimp.MIME_PNG);
+            const buffer = encodePng(img);
             let tex = {
                 filename: path.join(fontDir, texname),
                 texture: buffer
@@ -232,8 +214,8 @@ function generateBMFont(fontPath, opt, callback) {
         charset.forEach(first => {
             charset.forEach(second => {
                 const amount = font.getKerningValue(font.charToGlyph(first), font.charToGlyph(second));
-                const f = first.charCodeAt(0);
-                const s = second.charCodeAt(0);
+                const f = first.codePointAt(0);
+                const s = second.codePointAt(0);
                 const a = amount * (fontSize / font.unitsPerEm);
                 if (amount !== 0) {
                     if (kernings[f] === undefined) kernings[f] = {};
@@ -365,20 +347,25 @@ function generateImage(opt, callback) {
         }
         let imageData;
         if (isNaN(channelCount) || !rawImageData.some(x => x !== 0)) { // if character is blank
-            readline.clearLine(process.stdout);
-            readline.cursorTo(process.stdout, 0);
-            console.log(`Warning: no bitmap for character '${char}' (${char.charCodeAt(0)}), adding to font as empty`);
+            if (process.stdout.isTTY) {
+                readline.clearLine(process.stdout);
+                readline.cursorTo(process.stdout, 0);
+            }
+            console.log(`Warning: no bitmap for character '${char}' (${char.codePointAt(0)}), adding to font as empty`);
             width = 0;
             height = 0;
         } else {
-            const buffer = new Uint8ClampedArray(pixels);
-            imageData = new Jimp({ data: buffer, width: width, height: height });
+            imageData = {
+                data: new Uint8ClampedArray(pixels),
+                width,
+                height
+            };
         }
         const container = {
             data: {
                 imageData,
                 fontData: [
-                    char.charCodeAt(0), // id
+                    char.codePointAt(0), // id
                     width,
                     height,
                     Math.round(bBox.x1) - pad, // xoffset
@@ -395,4 +382,290 @@ function generateImage(opt, callback) {
     subproc.stdin.write(shapeDesc);
     subproc.stdin.write('\n');
     subproc.stdin.destroy();
+}
+
+function mapLimit(items, limit, iterator, callback) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+    let active = 0;
+    let completed = 0;
+    let done = false;
+
+    if (items.length === 0) return callback(null, results);
+
+    function launch() {
+        if (done) return;
+        while (active < limit && nextIndex < items.length) {
+            const index = nextIndex++;
+            active++;
+            iterator(items[index], (error, result) => {
+                active--;
+                if (done) return;
+                if (error) {
+                    done = true;
+                    return callback(error);
+                }
+                results[index] = result;
+                completed++;
+                if (completed === items.length) {
+                    done = true;
+                    return callback(null, results);
+                }
+                launch();
+            });
+        }
+    }
+
+    launch();
+}
+
+function createProgress(total) {
+    let value = 0;
+    const interactive = Boolean(process.stdout.isTTY);
+    return {
+        start() {
+            if (total > 0 && interactive) process.stdout.write(`Generating 0% (0/${total})`);
+        },
+        increment() {
+            value++;
+            if (total === 0 || !interactive) return;
+            const percentage = Math.floor((value / total) * 100);
+            readline.clearLine(process.stdout, 0);
+            readline.cursorTo(process.stdout, 0);
+            process.stdout.write(`Generating ${percentage}% (${value}/${total})`);
+        },
+        stop() {
+            if (total > 0 && interactive) {
+                readline.clearLine(process.stdout, 0);
+                readline.cursorTo(process.stdout, 0);
+            }
+        }
+    };
+}
+
+class ShelfPacker {
+    constructor(width, height, padding, options = {}) {
+        this.width = Number(width);
+        this.height = Number(height);
+        this.padding = Number(padding) || 0;
+        this.options = options;
+        this.bins = [];
+    }
+
+    addArray(items) {
+        items.forEach(item => this.add(item));
+        this.resizeBins();
+    }
+
+    add(item) {
+        let bin = this.bins.find(candidate => candidate.canFit(item));
+        if (!bin) {
+            bin = new ShelfBin(this.width, this.height, this.padding, this.options.border || 0);
+            this.bins.push(bin);
+        }
+        if (!bin.add(item)) {
+            if (bin.rects.length === 0) {
+                throw new RangeError(`Glyph ${item.width}x${item.height} does not fit in texture ${this.width}x${this.height}`);
+            }
+            const nextBin = new ShelfBin(this.width, this.height, this.padding, this.options.border || 0);
+            this.bins.push(nextBin);
+            if (!nextBin.add(item)) {
+                throw new RangeError(`Glyph ${item.width}x${item.height} does not fit in texture ${this.width}x${this.height}`);
+            }
+        }
+    }
+
+    resizeBins() {
+        if (!this.options.smart && !this.options.pot && !this.options.square) return;
+        this.bins.forEach(bin => {
+            let usedWidth = 1;
+            let usedHeight = 1;
+            bin.rects.forEach(rect => {
+                usedWidth = Math.max(usedWidth, rect.x + rect.width + bin.border);
+                usedHeight = Math.max(usedHeight, rect.y + rect.height + bin.border);
+            });
+            if (this.options.smart) {
+                bin.width = Math.min(bin.width, usedWidth);
+                bin.height = Math.min(bin.height, usedHeight);
+            }
+            if (this.options.pot) {
+                bin.width = nextPowerOfTwo(bin.width);
+                bin.height = nextPowerOfTwo(bin.height);
+            }
+            if (this.options.square) {
+                const size = Math.max(bin.width, bin.height);
+                bin.width = size;
+                bin.height = size;
+            }
+        });
+    }
+
+    save() {
+        return this.bins.map(bin => ({
+            width: bin.width,
+            height: bin.height,
+            rects: bin.rects.map(rect => ({
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height
+            }))
+        }));
+    }
+}
+
+class ShelfBin {
+    constructor(width, height, padding, border) {
+        this.width = width;
+        this.height = height;
+        this.padding = padding;
+        this.border = border;
+        this.x = border;
+        this.y = border;
+        this.rowHeight = 0;
+        this.rects = [];
+    }
+
+    canFit(item) {
+        if (item.width === 0 || item.height === 0) return true;
+        if (item.width + this.border * 2 > this.width || item.height + this.border * 2 > this.height) return false;
+        return this.y + this.rowHeight + this.padding + item.height + this.border <= this.height
+            || this.y + item.height + this.border <= this.height;
+    }
+
+    add(item) {
+        const width = item.width || 0;
+        const height = item.height || 0;
+        if (width === 0 || height === 0) {
+            this.rects.push({ x: this.border, y: this.border, width, height, data: item.data, rot: false });
+            return true;
+        }
+        if (width + this.border * 2 > this.width || height + this.border * 2 > this.height) return false;
+        if (this.x + width + this.border > this.width) {
+            this.x = this.border;
+            this.y += this.rowHeight + this.padding;
+            this.rowHeight = 0;
+        }
+        if (this.y + height + this.border > this.height) return false;
+
+        this.rects.push({ x: this.x, y: this.y, width, height, data: item.data, rot: false });
+        this.x += width + this.padding;
+        this.rowHeight = Math.max(this.rowHeight, height);
+        return true;
+    }
+}
+
+function nextPowerOfTwo(value) {
+    let result = 1;
+    while (result < value) result *= 2;
+    return result;
+}
+
+function createImage(width, height, color) {
+    const data = new Uint8ClampedArray(width * height * 4);
+    const rgba = [
+        (color >>> 24) & 255,
+        (color >>> 16) & 255,
+        (color >>> 8) & 255,
+        color & 255
+    ];
+    for (let i = 0; i < data.length; i += 4) {
+        data[i] = rgba[0];
+        data[i + 1] = rgba[1];
+        data[i + 2] = rgba[2];
+        data[i + 3] = rgba[3];
+    }
+    return { width, height, data };
+}
+
+function compositeImage(target, source, x, y) {
+    for (let row = 0; row < source.height; row++) {
+        const targetY = y + row;
+        if (targetY < 0 || targetY >= target.height) continue;
+        for (let col = 0; col < source.width; col++) {
+            const targetX = x + col;
+            if (targetX < 0 || targetX >= target.width) continue;
+            const sourceIndex = (row * source.width + col) * 4;
+            const targetIndex = (targetY * target.width + targetX) * 4;
+            target.data[targetIndex] = source.data[sourceIndex];
+            target.data[targetIndex + 1] = source.data[sourceIndex + 1];
+            target.data[targetIndex + 2] = source.data[sourceIndex + 2];
+            target.data[targetIndex + 3] = source.data[sourceIndex + 3];
+        }
+    }
+}
+
+function rotateImage90(image) {
+    const rotated = createImage(image.height, image.width, 0x00000000);
+    for (let y = 0; y < image.height; y++) {
+        for (let x = 0; x < image.width; x++) {
+            const sourceIndex = (y * image.width + x) * 4;
+            const targetX = image.height - y - 1;
+            const targetY = x;
+            const targetIndex = (targetY * rotated.width + targetX) * 4;
+            rotated.data[targetIndex] = image.data[sourceIndex];
+            rotated.data[targetIndex + 1] = image.data[sourceIndex + 1];
+            rotated.data[targetIndex + 2] = image.data[sourceIndex + 2];
+            rotated.data[targetIndex + 3] = image.data[sourceIndex + 3];
+        }
+    }
+    return rotated;
+}
+
+function encodePng(image) {
+    const stride = image.width * 4;
+    const raw = Buffer.alloc((stride + 1) * image.height);
+    for (let y = 0; y < image.height; y++) {
+        const rawOffset = y * (stride + 1);
+        raw[rawOffset] = 0;
+        Buffer.from(image.data.buffer, image.data.byteOffset + y * stride, stride).copy(raw, rawOffset + 1);
+    }
+
+    return Buffer.concat([
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        pngChunk('IHDR', createIhdr(image.width, image.height)),
+        pngChunk('IDAT', zlib.deflateSync(raw)),
+        pngChunk('IEND', Buffer.alloc(0))
+    ]);
+}
+
+function createIhdr(width, height) {
+    const data = Buffer.alloc(13);
+    data.writeUInt32BE(width, 0);
+    data.writeUInt32BE(height, 4);
+    data[8] = 8;
+    data[9] = 6;
+    data[10] = 0;
+    data[11] = 0;
+    data[12] = 0;
+    return data;
+}
+
+function pngChunk(type, data) {
+    const typeBuffer = Buffer.from(type);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length, 0);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), 0);
+    return Buffer.concat([length, typeBuffer, data, crc]);
+}
+
+const crcTable = (() => {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) {
+            c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+        }
+        table[i] = c >>> 0;
+    }
+    return table;
+})();
+
+function crc32(buffer) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < buffer.length; i++) {
+        crc = crcTable[(crc ^ buffer[i]) & 255] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
 }
