@@ -6,6 +6,7 @@ const fs = require('fs');
 const readline = require('readline');
 const assert = require('assert');
 const zlib = require('zlib');
+const sharp = require('sharp');
 
 const defaultCharset = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~".split('');
 const controlChars = ['\n', '\r', '\t'];
@@ -29,12 +30,13 @@ module.exports = generateBMFont;
  *            filename : filename of both font file and font textures
  *            fontSize : font size for generated textures (default 42)
  *            charset : charset in generated font, could be array or string (default is Western)
- *            textureWidth : Width of generated textures (default 512)
- *            textureHeight : Height of generated textures (default 512)
+ *            textureWidth : Preferred width used to estimate the single generated texture
+ *            textureHeight : Preferred height used to estimate the single generated texture
  *            distanceRange : distance range for computing signed distance field
  *            fieldType : "msdf"(default), "sdf", "psdf"
+ *            imageType : generated texture image format: "webp"(default) or "png"
  *            roundDecimal  : rounded digits of the output font file. (Defaut is null)
- *            smartSize : shrink atlas to the smallest possible square (Default: false)
+ *            smartSize : shrink atlas to the smallest practical single texture (Default: true)
  *            pot : atlas size shall be power of 2 (Default: false)
  *            square : atlas size shall be square (Default: false)
  *            rot : allow 90-degree rotation while packing (Default: false)
@@ -88,8 +90,9 @@ function generateBMFont(fontPath, opt, callback) {
     const texturePadding = opt.texturePadding = utils.valueQueue([opt.texturePadding, reuse.texturePadding, 1]);
     const border = opt.border = utils.valueQueue([opt.border, reuse.border, 0]);
     const fieldType = opt.fieldType = utils.valueQueue([opt.fieldType, reuse.fieldType, 'msdf']);
+    const imageType = opt.imageType = utils.valueQueue([opt.imageType, reuse.imageType, 'webp']);
     const roundDecimal = opt.roundDecimal = utils.valueQueue([opt.roundDecimal, reuse.roundDecimal]); // if no roudDecimal option, left null as-is
-    const smartSize = opt.smartSize = utils.valueQueue([opt.smartSize, reuse.smartSize, false]);
+    const smartSize = opt.smartSize = utils.valueQueue([opt.smartSize, reuse.smartSize, true]);
     const pot = opt.pot = utils.valueQueue([opt.pot, reuse.pot, false]);
     const square = opt.square = utils.valueQueue([opt.square, reuse.square, false]);
     const debug = opt.vector || false;
@@ -100,6 +103,9 @@ function generateBMFont(fontPath, opt, callback) {
     // TODO: Validate options
     if (fieldType !== 'msdf' && fieldType !== 'sdf' && fieldType !== 'psdf' && fieldType !== 'mtsdf') {
         throw new TypeError('fieldType must be one of msdf, sdf, or psdf');
+    }
+    if (imageType !== 'webp' && imageType !== 'png') {
+        throw new TypeError('imageType must be one of webp or png');
     }
 
     const font = typeof fontPath === 'string'
@@ -175,9 +181,8 @@ function generateBMFont(fontPath, opt, callback) {
             let fillColor = fieldType === "mtsdf" ? 0x000000ff : 0x00000000;
             let img = createImage(bin.width, bin.height, fillColor);
             if (index > pages.length - 1) {
-                if (packer.bins.length > 1) texname = `${filename}.${index}`;
-                else texname = filename;
-                pages.push(`${texname}.png`);
+                texname = filename;
+                pages.push(`${texname}.${imageType}`);
             } else {
                 texname = path.basename(pages[index], path.extname(pages[index]));
             }
@@ -199,10 +204,11 @@ function generateBMFont(fontPath, opt, callback) {
                 // charData.page = index;
                 chars.push(rect.data.fontData);
             });
-            const buffer = encodePng(img);
+            const buffer = await encodeTexture(img, imageType);
             let tex = {
                 filename: path.join(fontDir, texname),
-                texture: buffer
+                texture: buffer,
+                extension: imageType
             }
             if (debug) tex.svg = svg;
             return tex;
@@ -445,34 +451,18 @@ function createProgress(total) {
 
 class ShelfPacker {
     constructor(width, height, padding, options = {}) {
-        this.width = Number(width);
-        this.height = Number(height);
+        this.width = Number(width) || 512;
+        this.height = Number(height) || 512;
         this.padding = Number(padding) || 0;
         this.options = options;
         this.bins = [];
     }
 
     addArray(items) {
-        items.forEach(item => this.add(item));
+        const packed = this.findBestSingleBin(items);
+        if (!packed) throw new RangeError('Unable to pack glyphs into a single texture');
+        this.bins = [packed];
         this.resizeBins();
-    }
-
-    add(item) {
-        let bin = this.bins.find(candidate => candidate.canFit(item));
-        if (!bin) {
-            bin = new ShelfBin(this.width, this.height, this.padding, this.options.border || 0);
-            this.bins.push(bin);
-        }
-        if (!bin.add(item)) {
-            if (bin.rects.length === 0) {
-                throw new RangeError(`Glyph ${item.width}x${item.height} does not fit in texture ${this.width}x${this.height}`);
-            }
-            const nextBin = new ShelfBin(this.width, this.height, this.padding, this.options.border || 0);
-            this.bins.push(nextBin);
-            if (!nextBin.add(item)) {
-                throw new RangeError(`Glyph ${item.width}x${item.height} does not fit in texture ${this.width}x${this.height}`);
-            }
-        }
     }
 
     resizeBins() {
@@ -500,6 +490,82 @@ class ShelfPacker {
         });
     }
 
+    findBestSingleBin(items) {
+        const sorted = items.slice().sort((a, b) => {
+            const areaDiff = (b.width * b.height) - (a.width * a.height);
+            if (areaDiff !== 0) return areaDiff;
+            const heightDiff = b.height - a.height;
+            if (heightDiff !== 0) return heightDiff;
+            return b.width - a.width;
+        });
+        const border = this.options.border || 0;
+        const visibleItems = sorted.filter(item => item.width > 0 && item.height > 0);
+
+        if (visibleItems.length === 0) {
+            const bin = new ShelfBin(Math.max(1, border * 2 + 1), Math.max(1, border * 2 + 1), this.padding, border);
+            sorted.forEach(item => bin.add(item));
+            return bin;
+        }
+
+        const maxItemWidth = visibleItems.reduce((max, item) => Math.max(max, item.width), 0) + border * 2;
+        const maxItemHeight = visibleItems.reduce((max, item) => Math.max(max, item.height), 0) + border * 2;
+        const paddedArea = visibleItems.reduce((sum, item) => {
+            return sum + (item.width + this.padding) * (item.height + this.padding);
+        }, border * border * 4);
+        const targetAspect = Math.max(0.8, Math.min(1.25, this.width / this.height || 1));
+        const targetWidth = Math.max(maxItemWidth, Math.ceil(Math.sqrt(paddedArea * targetAspect)));
+        const minWidth = Math.max(maxItemWidth, Math.floor(targetWidth * 0.7));
+        const maxWidth = Math.max(minWidth, Math.ceil(targetWidth * 1.45), this.width);
+        const step = Math.max(1, Math.ceil(targetWidth / 96));
+        const candidates = new Set([maxItemWidth, this.width, targetWidth, minWidth, maxWidth]);
+
+        for (let width = minWidth; width <= maxWidth; width += step) {
+            candidates.add(width);
+        }
+
+        let best = null;
+        Array.from(candidates)
+            .map(width => Math.max(maxItemWidth, Math.ceil(width)))
+            .sort((a, b) => a - b)
+            .forEach(width => {
+                const bin = this.packToWidth(sorted, width);
+                if (!bin || bin.height < maxItemHeight) return;
+                const score = scoreBin(bin);
+                const bestScore = best ? scoreBin(best) : Infinity;
+                if (score < bestScore) {
+                    best = bin;
+                }
+            });
+
+        return best;
+    }
+
+    packToWidth(items, width) {
+        const border = this.options.border || 0;
+        const bin = new ShelfBin(width, Number.MAX_SAFE_INTEGER, this.padding, border);
+        for (const item of items) {
+            if (!bin.add(item)) return null;
+        }
+        let usedWidth = 1;
+        let usedHeight = 1;
+        bin.rects.forEach(rect => {
+            usedWidth = Math.max(usedWidth, rect.x + rect.width + border);
+            usedHeight = Math.max(usedHeight, rect.y + rect.height + border);
+        });
+        bin.width = this.options.smart ? usedWidth : Math.max(this.width, usedWidth);
+        bin.height = this.options.smart ? usedHeight : Math.max(this.height, usedHeight);
+        if (this.options.pot) {
+            bin.width = nextPowerOfTwo(bin.width);
+            bin.height = nextPowerOfTwo(bin.height);
+        }
+        if (this.options.square) {
+            const size = Math.max(bin.width, bin.height);
+            bin.width = size;
+            bin.height = size;
+        }
+        return bin;
+    }
+
     save() {
         return this.bins.map(bin => ({
             width: bin.width,
@@ -512,6 +578,12 @@ class ShelfPacker {
             }))
         }));
     }
+}
+
+function scoreBin(bin) {
+    const area = bin.width * bin.height;
+    const aspect = Math.max(bin.width / bin.height, bin.height / bin.width);
+    return area * (1 + Math.pow(Math.log(aspect), 2) * 0.9);
 }
 
 class ShelfBin {
@@ -610,6 +682,20 @@ function rotateImage90(image) {
         }
     }
     return rotated;
+}
+
+async function encodeTexture(image, imageType) {
+    if (imageType === 'png') return encodePng(image);
+    return sharp(Buffer.from(image.data.buffer, image.data.byteOffset, image.data.byteLength), {
+        raw: {
+            width: image.width,
+            height: image.height,
+            channels: 4
+        }
+    }).webp({
+        lossless: true,
+        effort: 6
+    }).toBuffer();
 }
 
 function encodePng(image) {

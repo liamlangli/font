@@ -45,7 +45,7 @@ if (typeof opt.reuse === 'boolean') {
     opt.filename = utils.valueQueue([opt.filename, path.join(fontDir, fontface)]);
     opt.vector = utils.valueQueue([opt.vector, false]);
     opt.reuse = utils.valueQueue([opt.reuse, false]);
-    opt.smartSize = utils.valueQueue([opt.smartSize, false]);
+    opt.smartSize = utils.valueQueue([opt.smartSize, true]);
     opt.pot = utils.valueQueue([opt.pot, false]);
     opt.square = utils.valueQueue([opt.square, false]);
     opt.rot = utils.valueQueue([opt.rot, false]);
@@ -100,9 +100,10 @@ ${texture.svg}
                     console.log('wrote svg[', index, ']         : ', `${texture.filename}.svg`);
                 });
             }
-            fs.writeFile(`${texture.filename}.png`, texture.texture, (err) => {
+            const extension = texture.extension || opt.imageType || 'webp';
+            fs.writeFile(`${texture.filename}.${extension}`, texture.texture, (err) => {
                 if (err) throw err;
-                console.log('wrote spritesheet[', index, '] : ', `${texture.filename}.png`);
+                console.log('wrote spritesheet[', index, '] : ', `${texture.filename}.${extension}`);
             });
         });
         fs.writeFile(font.filename, font.data, (err) => {
@@ -149,6 +150,7 @@ function longestLength(arr) {
 function parseArgs(args) {
     const options = {
         outputType: 'json',
+        imageType: 'webp',
         fontSize: 42,
         textureSize: [2048, 2048],
         texturePadding: 1,
@@ -158,7 +160,7 @@ function parseArgs(args) {
         roundDecimal: 0,
         vector: false,
         reuse: false,
-        smartSize: false,
+        smartSize: true,
         pot: false,
         square: false,
         rot: false,
@@ -178,6 +180,9 @@ function parseArgs(args) {
             case '-f':
             case '--output-type':
                 options.outputType = readOptionValue(args, ++i, arg);
+                break;
+            case '--image-type':
+                options.imageType = readOptionValue(args, ++i, arg);
                 break;
             case '-o':
             case '--filename':
@@ -273,11 +278,12 @@ Creates a BMFont compatible bitmap font of signed distance fields from a font fi
 
 Options:
   -f, --output-type <format>       font file format: xml(default) | json | txt
+      --image-type <format>        texture image format: webp(default) | png
   -o, --filename <atlas_path>      filename of font textures
   -s, --font-size <fontSize>       font size for generated textures
   -c, --charset <preset>           built-in charset preset: zh_cn
   -i, --charset-file <charset>     user-specified charactors from text-file
-  -m, --texture-size <w,h>         output texture atlas size
+  -m, --texture-size <w,h>         preferred atlas shape for single-image packing
   -p, --texture-padding <n>        padding between glyphs
   -b, --border <n>                 space between glyphs textures & edge
   -r, --distance-range <n>         distance range for SDF
@@ -285,8 +291,8 @@ Options:
   -d, --round-decimal <digit>      rounded digits of the output font file
   -v, --vector                     generate svg vector file for debuging
   -u, --reuse [file.cfg]           save/create config file for reusing settings
-      --smart-size                 shrink atlas to the smallest possible square
-      --pot                        atlas size shall be power of 2
+      --smart-size                 auto-size the single atlas for better pixel usage
+      --pot                        force power-of-two size after packing
       --square                     atlas size shall be square
       --rot                        allow 90-degree rotation while packing
       --rtl                        use RTL(Arabic/Persian) charactors fix
