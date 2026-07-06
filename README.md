@@ -1,6 +1,6 @@
 # @liamlangli/font
 
-`@liamlangli/font` provides the `ufont` CLI for generating BMFont-compatible bitmap font atlases from `ttf`, `otf`, or `woff` files using signed distance fields.
+`@liamlangli/font` provides the `ufont` CLI for generating BMFont-compatible single-image WebP bitmap font atlases from `ttf`, `otf`, or `woff` files using signed distance fields.
 
 ## Install
 
@@ -42,7 +42,7 @@ ufont ./public/font/Lato.ttf
 
 This generates:
 
-- A bitmap atlas PNG, such as `Lato.png`
+- A single lossless WebP bitmap atlas, such as `Lato.webp`
 - A font metadata file, such as `Lato.json` or `Lato.fnt`
 - An optional config file when `--reuse` is enabled
 - Optional SVG debug output when `--vector` is enabled
@@ -73,7 +73,7 @@ Use the built-in Simplified Chinese charset:
 ufont --charset zh_cn ./public/font/Lato.ttf
 ```
 
-Generate a smaller atlas with custom glyph size and padding:
+Generate an atlas with custom glyph size, target texture shape, and padding:
 
 ```bash
 ufont -s 64 -m 1024,1024 -p 2 -b 4 ./public/font/Lato.ttf
@@ -90,11 +90,12 @@ ufont -u ./lato.cfg ./public/font/Lato.ttf
 | Option | Description | Default |
 | --- | --- | --- |
 | `-f, --output-type <format>` | Output metadata format: `xml`, `json`, or `txt` | `json` in CLI parsing, internal fallback is `xml` |
+| `--image-type <format>` | Texture image format: `webp` or `png` | `webp` |
 | `-o, --filename <atlas_path>` | Output base filename for atlas images; font filename is derived from the font face name | font file directory + font face |
 | `-s, --font-size <fontSize>` | Glyph render size | `42` |
 | `-c, --charset <preset>` | Built-in charset preset. Currently supports `zh_cn` (`en_common` + `zh_cn_3500`) | ASCII fallback |
 | `-i, --charset-file <charset>` | Text file containing characters to include | ASCII fallback |
-| `-m, --texture-size <w,h>` | Atlas size as `width,height` | `2048,2048` from CLI |
+| `-m, --texture-size <w,h>` | Preferred atlas shape as `width,height`; the generator may resize to keep one efficient image | `2048,2048` from CLI |
 | `-p, --texture-padding <n>` | Padding between glyphs | `1` |
 | `-b, --border <n>` | Space between atlas edge and packed glyphs | `0` |
 | `-r, --distance-range <n>` | SDF pixel range | `4` |
@@ -102,8 +103,8 @@ ufont -u ./lato.cfg ./public/font/Lato.ttf
 | `-d, --round-decimal <digit>` | Round numeric values in output metadata | `0` |
 | `-v, --vector` | Write SVG debug files for atlas pages | `false` |
 | `-u, --reuse [file.cfg]` | Save or reuse generation settings from a config file | `false` |
-| `--smart-size` | Shrink atlas to the smallest possible square | `false` in runtime defaults |
-| `--pot` | Force atlas dimensions to powers of two | `false` |
+| `--smart-size` | Auto-size the single atlas for better pixel usage | `true` |
+| `--pot` | Force atlas dimensions to powers of two after packing; generally unnecessary | `false` |
 | `--square` | Force atlas dimensions to be square | `false` |
 | `--rot` | Allow 90-degree glyph rotation while packing | `false` |
 | `--rtl` | Enable RTL character fixes | `false` |
@@ -112,8 +113,8 @@ ufont -u ./lato.cfg ./public/font/Lato.ttf
 
 - The output metadata file is written as `<font-face>.json` when `-f json` is used.
 - Non-JSON formats are written as `<font-face>.fnt`.
-- Texture pages are written beside the source font by default unless `-o` points elsewhere.
-- If the atlas needs multiple pages, the CLI writes numbered textures such as `MyFont.0.png`, `MyFont.1.png`, and so on.
+- The texture is written beside the source font by default unless `-o` points elsewhere.
+- The generator always packs into one texture. It scans non-power-of-two atlas sizes, prefers a near-square compact result, and writes lossless WebP by default.
 
 ## Charset Files
 
